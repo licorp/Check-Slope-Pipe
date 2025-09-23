@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Assembly>C:\Users\Admin\Desktop\revit API\Modify\Check Slope Pipe\CheckSlopePipe.dll</Assembly>
+    <ClientId>5a47d142-60d8-4b72-9c45-3d7d60a43f3b</ClientId>
+    <FullClassName>CheckSlopePipe.CheckSlopeCommand</FullClassName>
+    <Text>Kiểm tra độ dốc đường ống</Text>
+    <Description>Tiện ích kiểm tra độ dốc đường ống theo đường kính</Description>
+    <VisibilityMode>AlwaysVisible</VisibilityMode>
+    <Discipline>Any</Discipline>
+    <VendorId>KiloCode</VendorId>
+    <VendorDescription>Kilo Code Solutions</VendorDescription>
+  </AddIn>
+</RevitAddIns>
