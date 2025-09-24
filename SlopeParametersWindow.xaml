@@ -1,0 +1,215 @@
+<Window x:Class="CheckSlopePipe.SlopeParametersWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pipe Slope Check / Kiểm tra độ dốc ống" 
+        Width="650" Height="550" 
+        MinHeight="400"
+        ResizeMode="CanResize" 
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F5F5">
+    <Window.Resources>
+        <Style x:Key="RunButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#4CAF50"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="#388E3C" 
+                                BorderThickness="1" 
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#45A049"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#388E3C"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <Style x:Key="CancelButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#F44336"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="#D32F2F" 
+                                BorderThickness="1" 
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#E53935"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#D32F2F"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="AddButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#2196F3"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="#1976D2" 
+                                BorderThickness="1" 
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#1E88E5"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#1976D2"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    
+    <!-- Khung bao bên ngoài với đổ bóng và góc bo tròn -->
+    <Border Background="White" 
+            BorderBrush="#E0E0E0" 
+            BorderThickness="1" 
+            CornerRadius="8" 
+            Margin="10">
+        <Border.Effect>
+            <DropShadowEffect Color="Gray" 
+                              Direction="315" 
+                              ShadowDepth="3" 
+                              Opacity="0.3" 
+                              BlurRadius="10"/>
+        </Border.Effect>
+        
+        <Grid Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            
+            <!-- Tiêu đề -->
+            <TextBlock Text="Pipe Size - Slope Configuration / Cấu hình Size-Slope đường ống" 
+                       Grid.Row="0"
+                       HorizontalAlignment="Center" 
+                       Margin="0,0,0,15" 
+                       FontWeight="Bold"
+                       FontSize="16"
+                       Foreground="#333"/>
+            
+            <!-- Tolerance input -->
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,15">
+                <TextBlock Text="Tolerance / Dung sai (%):" 
+                           VerticalAlignment="Center" 
+                           Margin="0,0,10,0" 
+                           FontWeight="SemiBold"
+                           FontSize="14"/>
+                <TextBox Name="ToleranceTextBox" 
+                         Width="80" 
+                         Height="30" 
+                         Text="5"
+                         VerticalContentAlignment="Center"
+                         FontSize="14"
+                         ToolTip="Nhập dung sai cho độ dốc (%)"/>
+                <TextBlock Text="%" 
+                           VerticalAlignment="Center" 
+                           Margin="5,0,0,0" 
+                           FontSize="14"/>
+            </StackPanel>
+            
+            <!-- Header for Size-Slope pairs -->
+            <Grid Grid.Row="2" Margin="0,0,0,10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <!-- Header -->
+                <Grid Grid.Row="0" Background="#E3F2FD" Height="35">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*"/>
+                        <ColumnDefinition Width="2*"/>
+                        <ColumnDefinition Width="1*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Size (mm)" Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center" FontWeight="Bold"/>
+                    <TextBlock Text="Slope (%)" Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Center" FontWeight="Bold"/>
+                    <TextBlock Text="Action" Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Center" FontWeight="Bold"/>
+                </Grid>
+                
+                <!-- Scrollable list -->
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" MaxHeight="250">
+                    <StackPanel Name="SizeSlopePanel">
+                        <!-- Dynamic content will be added here -->
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+            
+            <!-- Add new row button -->
+            <Button Name="AddRowButton" 
+                    Grid.Row="3"
+                    Content="Add New Row / Thêm dòng mới" 
+                    Style="{StaticResource AddButtonStyle}"
+                    Height="35" 
+                    Margin="0,10,0,15"
+                    FontSize="12"
+                    Click="AddRowButton_Click"/>
+            
+            <!-- Action buttons -->
+            <Grid Grid.Row="4" Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                
+                <Button Name="RunButton" 
+                        Content="Run Check / Kiểm tra" 
+                        Grid.Column="0"
+                        Style="{StaticResource RunButtonStyle}"
+                        Height="40" 
+                        Margin="40,0,15,0"
+                        FontSize="14"
+                        Click="RunButton_Click"/>
+                
+                <Button Name="CancelButton" 
+                        Content="Cancel / Hủy" 
+                        Grid.Column="1"
+                        Style="{StaticResource CancelButtonStyle}"
+                        Height="40" 
+                        Margin="15,0,40,0"
+                        FontSize="14"
+                        Click="CancelButton_Click"/>
+            </Grid>
+            
+            <!-- Version info -->
+            <TextBlock Text="Version 1.2 - Licorp - Enhanced with Dropdown Selection &amp; Schedule Override" 
+                       Grid.Row="5"
+                       HorizontalAlignment="Center" 
+                       Margin="0,8,0,0" 
+                       FontSize="10"
+                       Foreground="#666"/>
+        </Grid>
+    </Border>
+</Window>
