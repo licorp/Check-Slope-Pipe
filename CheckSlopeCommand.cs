@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using SWF = System.Windows.Forms;
+using System.IO;
 using Autodesk.Revit.ApplicationServices;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -14,12 +16,6 @@ namespace CheckSlopePipe
     [Regeneration(RegenerationOption.Manual)]
     public class CheckSlopeCommand : IExternalCommand
     {
-        // Tham số cấu hình độ dốc
-        private const double Diameter_1 = 100.0; // Đường kính 1 (mm)
-        private const double Slope_1 = 0.02;     // Độ dốc 1 (2%)
-        private const double Diameter_2 = 50.0;  // Đường kính 2 (mm)
-        private const double Slope_2 = 0.01;     // Độ dốc 2 (1%)
-
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
             UIApplication uiApp = commandData.Application;
@@ -28,23 +24,55 @@ namespace CheckSlopePipe
 
             try
             {
-                // Hiển thị hộp thoại nhập thông số
-                SlopeParametersForm form = new SlopeParametersForm();
-                if (form.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+                // Yêu cầu người dùng quét chọn đường ống
+                IList<Reference> selectedReferences;
+                try
                 {
-                    // Lấy tất cả đường ống trong dự án
-                    List<Pipe> allPipes = GetPipes(doc);
+                    selectedReferences = uiDoc.Selection.PickObjects(ObjectType.Element, 
+                        new PipeSelectionFilter(), "Chọn các đường ống cần kiểm tra độ dốc");
+                }
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                {
+                    return Result.Cancelled;
+                }
+
+                // Lấy các đường ống được chọn
+                List<Pipe> selectedPipes = new List<Pipe>();
+                foreach (Reference reference in selectedReferences)
+                {
+                    Pipe pipe = doc.GetElement(reference) as Pipe;
+                    if (pipe != null)
+                    {
+                        selectedPipes.Add(pipe);
+                    }
+                }
+
+                if (selectedPipes.Count == 0)
+                {
+                    TaskDialog.Show("Thông báo", "Không có đường ống nào được chọn.");
+                    return Result.Cancelled;
+                }
+
+                // Hiển thị form nhập thông số độ dốc
+                SlopeParametersForm form = new SlopeParametersForm();
+                if (form.ShowDialog() == SWF.DialogResult.OK)
+                {
+                    // Kiểm tra độ dốc cho các đường ống được chọn
+                    List<PipeInfo> nonCompliantPipes = CheckPipeSlopes(selectedPipes, form.SizeSlopePairs);
                     
-                    // Lọc các đường ống không đạt yêu cầu
-                    List<Pipe> nonCompliantPipes = CheckPipeSlopes(allPipes, form.Diameter1, form.Slope1, form.Diameter2, form.Slope2);
-                    
-                    // Tạo bảng dự toán
-                    GenerateQuantityTable(doc, nonCompliantPipes, form.Diameter1, form.Slope1, form.Diameter2, form.Slope2);
-                    
-                    // Hiển thị kết quả
-                    TaskDialog.Show("Kết quả kiểm tra", 
-                        $"Đã kiểm tra {allPipes.Count} đường ống.\n" +
-                        $"Tìm thấy {nonCompliantPipes.Count} đường ống không đạt yêu cầu.");
+                    // Tạo schedule cho các đường ống không đạt yêu cầu
+                    if (nonCompliantPipes.Count > 0)
+                    {
+                        CreateSchedule(doc, nonCompliantPipes);
+                        TaskDialog.Show("Kết quả", 
+                            $"Đã kiểm tra {selectedPipes.Count} đường ống.\n" +
+                            $"Tìm thấy {nonCompliantPipes.Count} đường ống không đạt yêu cầu.\n" +
+                            $"Đã tạo schedule 'Pipe Slope Check'.");
+                    }
+                    else
+                    {
+                        TaskDialog.Show("Kết quả", "Tất cả đường ống đều đạt yêu cầu về độ dốc.");
+                    }
                 }
 
                 return Result.Succeeded;
@@ -58,32 +86,27 @@ namespace CheckSlopePipe
         }
 
         /// <summary>
-        /// Lấy tất cả đường ống từ tài liệu Revit
+        /// Lọc chỉ chọn đường ống
         /// </summary>
-        private List<Pipe> GetPipes(Document doc)
+        public class PipeSelectionFilter : ISelectionFilter
         {
-            FilteredElementCollector collector = new FilteredElementCollector(doc);
-            collector.OfClass(typeof(Pipe));
-            
-            List<Pipe> pipes = new List<Pipe>();
-            foreach (Element element in collector)
+            public bool AllowElement(Element elem)
             {
-                Pipe pipe = element as Pipe;
-                if (pipe != null)
-                {
-                    pipes.Add(pipe);
-                }
+                return elem is Pipe;
             }
-            
-            return pipes;
+
+            public bool AllowReference(Reference reference, XYZ position)
+            {
+                return false;
+            }
         }
 
         /// <summary>
-        /// Kiểm tra độ dốc của đường ống theo điều kiện
+        /// Kiểm tra độ dốc của đường ống theo danh sách size-slope
         /// </summary>
-        private List<Pipe> CheckPipeSlopes(List<Pipe> pipes, double diameter1, double slope1, double diameter2, double slope2)
+        private List<PipeInfo> CheckPipeSlopes(List<Pipe> pipes, List<SizeSlopePair> sizeSlopePairs)
         {
-            List<Pipe> nonCompliantPipes = new List<Pipe>();
+            List<PipeInfo> nonCompliantPipes = new List<PipeInfo>();
 
             foreach (Pipe pipe in pipes)
             {
@@ -92,32 +115,26 @@ namespace CheckSlopePipe
                     continue;
 
                 // Lấy đường kính đường ống (chuyển đổi từ feet sang mm)
-                double pipeDiameter = GetPipeDiameter(pipe) * 304.8; // Chuyển feet sang mm
-
-                // Kiểm tra điều kiện độ dốc
+                double pipeDiameter = GetPipeDiameter(pipe) * 304.8;
                 double pipeSlope = GetPipeSlope(pipe);
-                
-                bool isCompliant = false;
-                
-                if (pipeDiameter >= diameter1)
-                {
-                    // Kiểm tra độ dốc cho đường kính lớn
-                    isCompliant = Math.Abs(pipeSlope - slope1) < 0.001; // Dung sai nhỏ
-                }
-                else if (pipeDiameter <= diameter2)
-                {
-                    // Kiểm tra độ dốc cho đường kính nhỏ
-                    isCompliant = Math.Abs(pipeSlope - slope2) < 0.001; // Dung sai nhỏ
-                }
-                else
-                {
-                    // Đường kính nằm giữa hai giá trị - không cần kiểm tra
-                    isCompliant = true;
-                }
 
-                if (!isCompliant)
+                // Tìm size-slope pair phù hợp
+                SizeSlopePair matchingPair = sizeSlopePairs.FirstOrDefault(pair => 
+                    Math.Abs(pipeDiameter - pair.Size) < 0.1); // Dung sai 0.1mm
+
+                if (matchingPair != null)
                 {
-                    nonCompliantPipes.Add(pipe);
+                    // Kiểm tra độ dốc
+                    if (Math.Abs(pipeSlope - matchingPair.Slope) > 0.001) // Dung sai nhỏ
+                    {
+                        nonCompliantPipes.Add(new PipeInfo
+                        {
+                            Pipe = pipe,
+                            ActualSlope = pipeSlope,
+                            RequiredSlope = matchingPair.Slope,
+                            Size = pipeDiameter
+                        });
+                    }
                 }
             }
 
@@ -138,12 +155,10 @@ namespace CheckSlopePipe
             XYZ startPoint = curve.GetEndPoint(0);
             XYZ endPoint = curve.GetEndPoint(1);
 
-            // Kiểm tra nếu đường ống gần như thẳng đứng (chênh lệch Z lớn, X,Y nhỏ)
             double deltaZ = Math.Abs(endPoint.Z - startPoint.Z);
             double deltaXY = Math.Sqrt(Math.Pow(endPoint.X - startPoint.X, 2) + Math.Pow(endPoint.Y - startPoint.Y, 2));
 
-            // Nếu deltaZ lớn hơn nhiều so với deltaXY, coi là đường ống thẳng đứng
-            return deltaZ > deltaXY * 10; // Ngưỡng có thể điều chỉnh
+            return deltaZ > deltaXY * 10;
         }
 
         /// <summary>
@@ -173,31 +188,131 @@ namespace CheckSlopePipe
         }
 
         /// <summary>
-        /// Tạo bảng dự toán cho các đường ống không đạt yêu cầu
+        /// Tạo schedule trong Revit với thông tin chi tiết
         /// </summary>
-        private void GenerateQuantityTable(Document doc, List<Pipe> nonCompliantPipes, double diameter1, double slope1, double diameter2, double slope2)
+        private void CreateSchedule(Document doc, List<PipeInfo> nonCompliantPipes)
         {
-            // Tạo transaction để thêm dữ liệu vào dự án
-            using (Transaction trans = new Transaction(doc, "Tạo bảng dự toán"))
+            using (Transaction trans = new Transaction(doc, "Create Pipe Slope Schedule"))
             {
                 trans.Start();
 
                 try
                 {
-                    // Tạo schedule cho đường ống
+                    // Tạo các tham số tạm thời nếu chưa tồn tại
+                    CreateTemporaryParameters(doc);
+                    
+                    // Đặt giá trị tham số cho các đường ống không đạt yêu cầu
+                    SetPipeParameters(doc, nonCompliantPipes);
+                    
+                    // Tạo schedule mới
                     ViewSchedule schedule = CreatePipeSchedule(doc);
                     
-                    // Thêm các đường ống không đạt yêu cầu vào schedule
-                    AddPipesToSchedule(doc, schedule, nonCompliantPipes);
+                    // Thêm các trường vào schedule
+                    AddScheduleFields(schedule, doc);
+                    
+                    // Thêm bộ lọc để chỉ hiển thị đường ống không đạt yêu cầu
+                    AddScheduleFilters(schedule);
                     
                     trans.Commit();
-                    
-                    TaskDialog.Show("Thông báo", "Đã tạo bảng dự toán cho các đường ống không đạt yêu cầu.");
                 }
                 catch (Exception ex)
                 {
                     trans.RollBack();
-                    throw new Exception($"Lỗi khi tạo bảng dự toán: {ex.Message}");
+                    throw new Exception($"Lỗi khi tạo schedule: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Tạo các tham số tạm thời cho kiểm tra độ dốc
+        /// </summary>
+        private void CreateTemporaryParameters(Document doc)
+        {
+            // Kiểm tra xem tham số đã tồn tại chưa
+            Category pipeCategory = Category.GetCategory(doc, BuiltInCategory.OST_PipeCurves);
+            BindingMap bindingMap = doc.ParameterBindings;
+            
+            // Tạo định nghĩa tham số cho "Non-Compliant"
+            string nonCompliantParamName = "SlopeCheck_NonCompliant";
+            DefinitionFile defFile = GetOrCreateSharedParameterFile(doc);
+            Definition nonCompliantDef = GetOrCreateDefinition(defFile, nonCompliantParamName, SpecTypeId.Boolean.YesNo);
+            
+            // Tạo định nghĩa tham số cho "Required Slope"
+            string requiredSlopeParamName = "SlopeCheck_RequiredSlope";
+            Definition requiredSlopeDef = GetOrCreateDefinition(defFile, requiredSlopeParamName, SpecTypeId.Number);
+            
+            // Tạo binding nếu chưa tồn tại
+            if (!bindingMap.Contains(nonCompliantDef))
+            {
+                Binding binding = new InstanceBinding(new List<Category> { pipeCategory });
+                bindingMap.Insert(nonCompliantDef, binding);
+            }
+            
+            if (!bindingMap.Contains(requiredSlopeDef))
+            {
+                Binding binding = new InstanceBinding(new List<Category> { pipeCategory });
+                bindingMap.Insert(requiredSlopeDef, binding);
+            }
+        }
+
+        /// <summary>
+        /// Lấy hoặc tạo file tham số chia sẻ
+        /// </summary>
+        private DefinitionFile GetOrCreateSharedParameterFile(Document doc)
+        {
+            Application app = doc.Application;
+            string tempPath = System.IO.Path.GetTempPath();
+            string sharedParamFile = System.IO.Path.Combine(tempPath, "SlopeCheck_SharedParameters.txt");
+            
+            // Tạo file tham số chia sẻ tạm thời
+            if (!System.IO.File.Exists(sharedParamFile))
+            {
+                System.IO.File.WriteAllText(sharedParamFile, "");
+            }
+            
+            app.SharedParametersFilename = sharedParamFile;
+            return app.OpenSharedParameterFile();
+        }
+
+        /// <summary>
+        /// Lấy hoặc tạo định nghĩa tham số
+        /// </summary>
+        private Definition GetOrCreateDefinition(DefinitionFile defFile, string paramName, ForgeTypeId paramType)
+        {
+            Definition definition = defFile.Groups
+                .SelectMany(g => g.Definitions)
+                .FirstOrDefault(d => d.Name == paramName);
+            
+            if (definition == null)
+            {
+                DefinitionGroup group = defFile.Groups.FirstOrDefault() ?? defFile.Groups.Create("SlopeCheck");
+                definition = group.Definitions.Create(paramName, paramType);
+            }
+            
+            return definition;
+        }
+
+        /// <summary>
+        /// Đặt giá trị tham số cho đường ống
+        /// </summary>
+        private void SetPipeParameters(Document doc, List<PipeInfo> nonCompliantPipes)
+        {
+            foreach (PipeInfo pipeInfo in nonCompliantPipes)
+            {
+                Pipe pipe = pipeInfo.Pipe;
+                
+                // Đặt tham số Non-Compliant thành true
+                Parameter nonCompliantParam = pipe.LookupParameter("SlopeCheck_NonCompliant");
+                if (nonCompliantParam != null && !nonCompliantParam.IsReadOnly)
+                {
+                    nonCompliantParam.Set(1); // 1 = true cho Yes/No
+                }
+                
+                // Đặt tham số Required Slope
+                Parameter requiredSlopeParam = pipe.LookupParameter("SlopeCheck_RequiredSlope");
+                if (requiredSlopeParam != null && !requiredSlopeParam.IsReadOnly)
+                {
+                    requiredSlopeParam.Set(pipeInfo.RequiredSlope);
                 }
             }
         }
@@ -212,237 +327,353 @@ namespace CheckSlopePipe
             
             // Tạo schedule
             ViewSchedule schedule = ViewSchedule.CreateSchedule(doc, pipeCategory.Id);
-            schedule.Name = "Bảng dự toán đường ống không đạt độ dốc";
-
-            // Thêm các trường cần thiết vào schedule
-            AddScheduleFields(doc, schedule);
-
+            schedule.Name = "Pipe Slope Check - Non Compliant";
+            
             return schedule;
         }
 
         /// <summary>
         /// Thêm các trường vào schedule
         /// </summary>
-        private void AddScheduleFields(Document doc, ViewSchedule schedule)
+        private void AddScheduleFields(ViewSchedule schedule, Document doc)
         {
-            // Lấy định nghĩa schedule
             ScheduleDefinition definition = schedule.Definition;
+            
+            // Xóa các trường mặc định
+            IList<ScheduleFieldId> existingFields = definition.GetFieldOrder();
+            foreach (ScheduleFieldId fieldId in existingFields.ToList())
+            {
+                definition.RemoveField(fieldId);
+            }
 
-            // Thêm các trường thông tin đường ống
-            AddScheduleField(definition, BuiltInParameter.ALL_MODEL_TYPE_NAME); // Loại đường ống
-            AddScheduleField(definition, BuiltInParameter.RBS_PIPE_DIAMETER_PARAM); // Đường kính
-            AddScheduleField(definition, BuiltInParameter.RBS_PIPE_SLOPE); // Độ dốc
-            AddScheduleField(definition, BuiltInParameter.RBS_START_LEVEL_PARAM); // Cao độ đầu
-            AddScheduleField(definition, BuiltInParameter.RBS_END_LEVEL_PARAM); // Cao độ cuối
-            AddScheduleField(definition, BuiltInParameter.CURVE_ELEM_LENGTH); // Chiều dài
+            // Thêm các trường theo yêu cầu
+            // 1. ID element
+            AddScheduleFieldByParameter(definition, BuiltInParameter.ID_PARAM, "Element ID");
+            
+            // 2. Size (Diameter)
+            AddScheduleFieldByParameter(definition, BuiltInParameter.RBS_PIPE_DIAMETER_PARAM, "Size");
+            
+            // 3. Slope thực tế
+            AddScheduleFieldByParameter(definition, BuiltInParameter.RBS_PIPE_SLOPE, "Actual Slope");
+            
+            // 4. Slope yêu cầu (tham số tạm thời)
+            AddScheduleFieldByName(definition, "SlopeCheck_RequiredSlope", "Required Slope", doc);
+            
+            // 5. Trạng thái không đạt yêu cầu
+            AddScheduleFieldByName(definition, "SlopeCheck_NonCompliant", "Non-Compliant", doc);
         }
 
         /// <summary>
-        /// Thêm một trường vào schedule
+        /// Thêm trường schedule dựa trên parameter
         /// </summary>
-        private void AddScheduleField(ScheduleDefinition definition, BuiltInParameter parameter)
+        private void AddScheduleFieldByParameter(ScheduleDefinition definition, BuiltInParameter parameter, string columnName)
         {
-            ScheduleFieldId fieldId = definition.AddField(parameter);
-            // Có thể tùy chỉnh thêm định dạng trường ở đây
+            // Lấy danh sách các trường có thể lập lịch
+            IList<SchedulableField> schedulableFields = definition.GetSchedulableFields();
+            
+            // Tìm trường phù hợp với parameter
+            SchedulableField targetField = schedulableFields.FirstOrDefault(f =>
+                f.ParameterId == parameter);
+            
+            if (targetField != null)
+            {
+                ScheduleField field = definition.AddField(targetField);
+                field.ColumnHeading = columnName;
+            }
         }
 
         /// <summary>
-        /// Thêm đường ống vào schedule
+        /// Thêm trường schedule dựa trên tên tham số
         /// </summary>
-        private void AddPipesToSchedule(Document doc, ViewSchedule schedule, List<Pipe> pipes)
+        private void AddScheduleFieldByName(ScheduleDefinition definition, string parameterName, string columnName, Document doc)
         {
-            // Trong Revit, schedule tự động hiển thị các element dựa trên bộ lọc
-            // Chúng ta có thể tạo bộ lọc để chỉ hiển thị các đường ống không đạt yêu cầu
-            ScheduleDefinition definition = schedule.Definition;
+            IList<SchedulableField> schedulableFields = definition.GetSchedulableFields();
+            
+            // Tìm trường bằng tên
+            SchedulableField targetField = schedulableFields.FirstOrDefault(f =>
+            {
+                string name = f.GetName(doc);
+                return name.Equals(parameterName, StringComparison.OrdinalIgnoreCase);
+            });
+            
+            if (targetField != null)
+            {
+                ScheduleField field = definition.AddField(targetField);
+                field.ColumnHeading = columnName;
+            }
+        }
 
+        /// <summary>
+        /// Thêm bộ lọc schedule để chỉ hiển thị đường ống không đạt yêu cầu
+        /// </summary>
+        private void AddScheduleFilters(ViewSchedule schedule)
+        {
+            ScheduleDefinition definition = schedule.Definition;
+            
             // Xóa các bộ lọc hiện có
-            IList<ScheduleFilter> filters = definition.GetFilters();
-            foreach (ScheduleFilter filter in filters)
+            IList<ScheduleFilter> existingFilters = definition.GetFilters();
+            foreach (ScheduleFilter filter in existingFilters)
             {
                 definition.RemoveFilter(filter);
             }
 
-            // Tạo bộ lọc mới (nếu cần)
-            // Trong trường hợp này, schedule sẽ hiển thị tất cả đường ống được chọn
+            // Tìm trường Non-Compliant
+            ScheduleField nonCompliantField = definition.GetFieldOrder()
+                .Select(fieldId => definition.GetField(fieldId))
+                .FirstOrDefault(f => f.ColumnHeading == "Non-Compliant");
+            
+            if (nonCompliantField != null)
+            {
+                // Tạo bộ lọc: Non-Compliant = true
+                ScheduleFilter filter = new ScheduleFilter(nonCompliantField.FieldId, ScheduleFilterType.Equal, 1);
+                definition.AddFilter(filter);
+            }
         }
     }
 
     /// <summary>
-    /// Form nhập thông số độ dốc
+    /// Class lưu thông tin đường ống không đạt yêu cầu
     /// </summary>
-    public partial class SlopeParametersForm : System.Windows.Forms.Form
+    public class PipeInfo
     {
-        public double Diameter1 { get; private set; }
-        public double Slope1 { get; private set; }
-        public double Diameter2 { get; private set; }
-        public double Slope2 { get; private set; }
+        public Pipe Pipe { get; set; }
+        public double Size { get; set; }
+        public double ActualSlope { get; set; }
+        public double RequiredSlope { get; set; }
+    }
 
-        private System.Windows.Forms.TextBox txtDiameter1;
-        private System.Windows.Forms.TextBox txtSlope1;
-        private System.Windows.Forms.TextBox txtDiameter2;
-        private System.Windows.Forms.TextBox txtSlope2;
-        private System.Windows.Forms.Button btnOK;
-        private System.Windows.Forms.Button btnCancel;
-        private System.Windows.Forms.Label label1;
-        private System.Windows.Forms.Label label2;
-        private System.Windows.Forms.Label label3;
-        private System.Windows.Forms.Label label4;
+    /// <summary>
+    /// Class lưu cặp size-slope
+    /// </summary>
+    public class SizeSlopePair
+    {
+        public double Size { get; set; }
+        public double Slope { get; set; }
+    }
+
+    /// <summary>
+    /// Form nhập thông số độ dốc với khả năng thêm nhiều cặp size-slope
+    /// </summary>
+    public partial class SlopeParametersForm : SWF.Form
+    {
+        public List<SizeSlopePair> SizeSlopePairs { get; private set; }
+        
+        private SWF.FlowLayoutPanel flowPanel;
+        private SWF.Button btnAdd;
+        private SWF.Button btnOK;
+        private SWF.Button btnCancel;
+        private int rowCount = 0;
 
         public SlopeParametersForm()
         {
+            SizeSlopePairs = new List<SizeSlopePair>();
             InitializeComponent();
-            LoadDefaultValues();
+            AddInitialRow();
         }
 
         private void InitializeComponent()
         {
-            this.txtDiameter1 = new System.Windows.Forms.TextBox();
-            this.txtSlope1 = new System.Windows.Forms.TextBox();
-            this.txtDiameter2 = new System.Windows.Forms.TextBox();
-            this.txtSlope2 = new System.Windows.Forms.TextBox();
-            this.btnOK = new System.Windows.Forms.Button();
-            this.btnCancel = new System.Windows.Forms.Button();
-            this.label1 = new System.Windows.Forms.Label();
-            this.label2 = new System.Windows.Forms.Label();
-            this.label3 = new System.Windows.Forms.Label();
-            this.label4 = new System.Windows.Forms.Label();
-            this.SuspendLayout();
-
-            // label1
-            this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(20, 20);
-            this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(120, 13);
-            this.label1.Text = "Đường kính 1 (mm):";
-
-            // txtDiameter1
-            this.txtDiameter1.Location = new System.Drawing.Point(150, 17);
-            this.txtDiameter1.Name = "txtDiameter1";
-            this.txtDiameter1.Size = new System.Drawing.Size(100, 20);
-            
-            // label2
-            this.label2.AutoSize = true;
-            this.label2.Location = new System.Drawing.Point(20, 50);
-            this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(120, 13);
-            this.label2.Text = "Độ dốc 1 (ví dụ: 0.02):";
-
-            // txtSlope1
-            this.txtSlope1.Location = new System.Drawing.Point(150, 47);
-            this.txtSlope1.Name = "txtSlope1";
-            this.txtSlope1.Size = new System.Drawing.Size(100, 20);
-            
-            // label3
-            this.label3.AutoSize = true;
-            this.label3.Location = new System.Drawing.Point(20, 80);
-            this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(120, 13);
-            this.label3.Text = "Đường kính 2 (mm):";
-
-            // txtDiameter2
-            this.txtDiameter2.Location = new System.Drawing.Point(150, 77);
-            this.txtDiameter2.Name = "txtDiameter2";
-            this.txtDiameter2.Size = new System.Drawing.Size(100, 20);
-            
-            // label4
-            this.label4.AutoSize = true;
-            this.label4.Location = new System.Drawing.Point(20, 110);
-            this.label4.Name = "label4";
-            this.label4.Size = new System.Drawing.Size(120, 13);
-            this.label4.Text = "Độ dốc 2 (ví dụ: 0.01):";
-
-            // txtSlope2
-            this.txtSlope2.Location = new System.Drawing.Point(150, 107);
-            this.txtSlope2.Name = "txtSlope2";
-            this.txtSlope2.Size = new System.Drawing.Size(100, 20);
-            
-            // btnOK
-            this.btnOK.Location = new System.Drawing.Point(70, 140);
-            this.btnOK.Name = "btnOK";
-            this.btnOK.Size = new System.Drawing.Size(75, 23);
-            this.btnOK.Text = "OK";
-            this.btnOK.Click += new System.EventHandler(this.btnOK_Click);
-            
-            // btnCancel
-            this.btnCancel.Location = new System.Drawing.Point(160, 140);
-            this.btnCancel.Name = "btnCancel";
-            this.btnCancel.Size = new System.Drawing.Size(75, 23);
-            this.btnCancel.Text = "Cancel";
-            this.btnCancel.Click += new System.EventHandler(this.btnCancel_Click);
-            
-            // Form
-            this.ClientSize = new System.Drawing.Size(300, 180);
-            this.Controls.Add(this.label1);
-            this.Controls.Add(this.txtDiameter1);
-            this.Controls.Add(this.label2);
-            this.Controls.Add(this.txtSlope1);
-            this.Controls.Add(this.label3);
-            this.Controls.Add(this.txtDiameter2);
-            this.Controls.Add(this.label4);
-            this.Controls.Add(this.txtSlope2);
-            this.Controls.Add(this.btnOK);
-            this.Controls.Add(this.btnCancel);
             this.Text = "Thiết lập thông số độ dốc";
-            this.ResumeLayout(false);
-            this.PerformLayout();
+            this.Size = new System.Drawing.Size(400, 300);
+            this.StartPosition = SWF.FormStartPosition.CenterScreen;
+            this.FormBorderStyle = SWF.FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            // Tạo flow layout panel
+            flowPanel = new SWF.FlowLayoutPanel();
+            flowPanel.FlowDirection = SWF.FlowDirection.TopDown;
+            flowPanel.AutoScroll = true;
+            flowPanel.Location = new System.Drawing.Point(10, 10);
+            flowPanel.Size = new System.Drawing.Size(370, 200);
+            this.Controls.Add(flowPanel);
+
+            // Tạo nút thêm
+            btnAdd = new SWF.Button();
+            btnAdd.Text = "+";
+            btnAdd.Size = new System.Drawing.Size(30, 23);
+            btnAdd.Location = new System.Drawing.Point(10, 220);
+            btnAdd.Click += BtnAdd_Click;
+            this.Controls.Add(btnAdd);
+
+            // Tạo nút OK
+            btnOK = new SWF.Button();
+            btnOK.Text = "OK";
+            btnOK.Size = new System.Drawing.Size(75, 23);
+            btnOK.Location = new System.Drawing.Point(200, 250);
+            btnOK.Click += BtnOK_Click;
+            this.Controls.Add(btnOK);
+
+            // Tạo nút Cancel
+            btnCancel = new SWF.Button();
+            btnCancel.Text = "Cancel";
+            btnCancel.Size = new System.Drawing.Size(75, 23);
+            btnCancel.Location = new System.Drawing.Point(285, 250);
+            btnCancel.Click += BtnCancel_Click;
+            this.Controls.Add(btnCancel);
         }
 
-        private void LoadDefaultValues()
+        private void AddInitialRow()
         {
-            txtDiameter1.Text = "100";
-            txtSlope1.Text = "0.02";
-            txtDiameter2.Text = "50";
-            txtSlope2.Text = "0.01";
+            AddNewRow();
         }
 
-        private void btnOK_Click(object sender, EventArgs e)
+        private void AddNewRow()
+        {
+            rowCount++;
+            
+            // Tạo panel cho dòng mới
+            SWF.Panel rowPanel = new SWF.Panel();
+            rowPanel.Size = new System.Drawing.Size(350, 30);
+            rowPanel.Margin = new SWF.Padding(0, 5, 0, 5);
+
+            // Label size
+            SWF.Label lblSize = new SWF.Label();
+            lblSize.Text = $"Size {rowCount} (mm):";
+            lblSize.Location = new System.Drawing.Point(0, 5);
+            lblSize.Size = new System.Drawing.Size(80, 20);
+            rowPanel.Controls.Add(lblSize);
+
+            // Textbox size
+            SWF.TextBox txtSize = new SWF.TextBox();
+            txtSize.Location = new System.Drawing.Point(85, 5);
+            txtSize.Size = new System.Drawing.Size(60, 20);
+            txtSize.Tag = rowCount;
+            rowPanel.Controls.Add(txtSize);
+
+            // Label slope
+            SWF.Label lblSlope = new SWF.Label();
+            lblSlope.Text = "Slope:";
+            lblSlope.Location = new System.Drawing.Point(155, 5);
+            lblSlope.Size = new System.Drawing.Size(40, 20);
+            rowPanel.Controls.Add(lblSlope);
+
+            // Textbox slope
+            SWF.TextBox txtSlope = new SWF.TextBox();
+            txtSlope.Location = new System.Drawing.Point(200, 5);
+            txtSlope.Size = new System.Drawing.Size(60, 20);
+            txtSlope.Tag = rowCount;
+            rowPanel.Controls.Add(txtSlope);
+
+            // Nút xóa
+            SWF.Button btnRemove = new SWF.Button();
+            btnRemove.Text = "X";
+            btnRemove.Size = new System.Drawing.Size(25, 20);
+            btnRemove.Location = new System.Drawing.Point(270, 5);
+            btnRemove.Tag = rowCount;
+            btnRemove.Click += BtnRemove_Click;
+            rowPanel.Controls.Add(btnRemove);
+
+            flowPanel.Controls.Add(rowPanel);
+        }
+
+        private void BtnAdd_Click(object sender, EventArgs e)
+        {
+            AddNewRow();
+        }
+
+        private void BtnRemove_Click(object sender, EventArgs e)
+        {
+            Button btn = sender as Button;
+            if (btn != null)
+            {
+                int rowNumber = (int)btn.Tag;
+                SWF.Control rowPanel = flowPanel.Controls
+                    .OfType<SWF.Panel>()
+                    .FirstOrDefault(p => p.Controls.OfType<SWF.TextBox>()
+                        .Any(txt => (int?)txt.Tag == rowNumber));
+                
+                if (rowPanel != null)
+                {
+                    flowPanel.Controls.Remove(rowPanel);
+                    // Cập nhật lại số thứ tự các dòng còn lại
+                    UpdateRowNumbers();
+                }
+            }
+        }
+
+        private void UpdateRowNumbers()
+        {
+            var rows = flowPanel.Controls.OfType<SWF.Panel>().ToList();
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var labels = rows[i].Controls.OfType<SWF.Label>().Where(l => l.Text.StartsWith("Size")).ToList();
+                if (labels.Count > 0)
+                {
+                    labels[0].Text = $"Size {i + 1} (mm):";
+                }
+                
+                var textBoxes = rows[i].Controls.OfType<SWF.TextBox>().ToList();
+                foreach (var txt in textBoxes)
+                {
+                    txt.Tag = i + 1;
+                }
+                
+                var buttons = rows[i].Controls.OfType<SWF.Button>().ToList();
+                foreach (var btn in buttons)
+                {
+                    btn.Tag = i + 1;
+                }
+            }
+            rowCount = rows.Count;
+        }
+
+        private void BtnOK_Click(object sender, EventArgs e)
         {
             if (ValidateInput())
             {
-                Diameter1 = double.Parse(txtDiameter1.Text);
-                Slope1 = double.Parse(txtSlope1.Text);
-                Diameter2 = double.Parse(txtDiameter2.Text);
-                Slope2 = double.Parse(txtSlope2.Text);
-                this.DialogResult = System.Windows.Forms.DialogResult.OK;
+                SizeSlopePairs.Clear();
+                
+                // Thu thập dữ liệu từ các dòng
+                foreach (SWF.Panel rowPanel in flowPanel.Controls.OfType<SWF.Panel>())
+                {
+                    var textBoxes = rowPanel.Controls.OfType<SWF.TextBox>().ToList();
+                    if (textBoxes.Count >= 2)
+                    {
+                        double size = double.Parse(textBoxes[0].Text);
+                        double slope = double.Parse(textBoxes[1].Text);
+                        
+                        SizeSlopePairs.Add(new SizeSlopePair { Size = size, Slope = slope });
+                    }
+                }
+                
+                this.DialogResult = DialogResult.OK;
                 this.Close();
             }
         }
 
-        private void btnCancel_Click(object sender, EventArgs e)
+        private void BtnCancel_Click(object sender, EventArgs e)
         {
-            this.DialogResult = System.Windows.Forms.DialogResult.Cancel;
+            this.DialogResult = DialogResult.Cancel;
             this.Close();
         }
 
         private bool ValidateInput()
         {
-            if (!double.TryParse(txtDiameter1.Text, out double d1) || d1 <= 0)
+            // Kiểm tra từng dòng
+            foreach (SWF.Panel rowPanel in flowPanel.Controls.OfType<SWF.Panel>())
             {
-                MessageBox.Show("Đường kính 1 phải là số dương");
-                return false;
+                var textBoxes = rowPanel.Controls.OfType<SWF.TextBox>().ToList();
+                if (textBoxes.Count < 2) continue;
+
+                if (!double.TryParse(textBoxes[0].Text, out double size) || size <= 0)
+                {
+                    SWF.MessageBox.Show("Size phải là số dương", "Lỗi", SWF.MessageBoxButtons.OK, SWF.MessageBoxIcon.Error);
+                    textBoxes[0].Focus();
+                    return false;
+                }
+
+                if (!double.TryParse(textBoxes[1].Text, out double slope) || slope <= 0)
+                {
+                    SWF.MessageBox.Show("Slope phải là số dương", "Lỗi", SWF.MessageBoxButtons.OK, SWF.MessageBoxIcon.Error);
+                    textBoxes[1].Focus();
+                    return false;
+                }
             }
-            
-            if (!double.TryParse(txtSlope1.Text, out double s1) || s1 <= 0)
+
+            if (flowPanel.Controls.OfType<SWF.Panel>().Count() == 0)
             {
-                MessageBox.Show("Độ dốc 1 phải là số dương");
-                return false;
-            }
-            
-            if (!double.TryParse(txtDiameter2.Text, out double d2) || d2 <= 0)
-            {
-                MessageBox.Show("Đường kính 2 phải là số dương");
-                return false;
-            }
-            
-            if (!double.TryParse(txtSlope2.Text, out double s2) || s2 <= 0)
-            {
-                MessageBox.Show("Độ dốc 2 phải là số dương");
-                return false;
-            }
-            
-            if (d1 <= d2)
-            {
-                MessageBox.Show("Đường kính 1 phải lớn hơn đường kính 2");
+                SWF.MessageBox.Show("Cần ít nhất một cặp size-slope", "Lỗi", SWF.MessageBoxButtons.OK, SWF.MessageBoxIcon.Error);
                 return false;
             }
 
